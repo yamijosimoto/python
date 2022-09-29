@@ -1,1 +1,4 @@
-# python курс Otus- qa engineer
+# python курс 
+Otus- 
+qa engineer
+курс Otus
