@@ -44,9 +44,8 @@ BEGIN
     GROUP BY sc.Name, t.LASTDATE, t.CurrencyCode;
 
     DELETE FROM BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1
-    WHERE LASTDATE BETWEEN 
-        CONVERT(INT, CONVERT(VARCHAR(8), @from, 112)) 
-        AND CONVERT(INT, CONVERT(VARCHAR(8), @to, 112));
+    WHERE LASTDATE >= CONVERT(INT, CONVERT(VARCHAR(8), @from, 112))
+      AND LASTDATE < CONVERT(INT, CONVERT(VARCHAR(8), @to, 112));
 
     INSERT INTO BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1 (Name, LASTDATE, Volume, Volume_2, CurrencyCode)
     SELECT
