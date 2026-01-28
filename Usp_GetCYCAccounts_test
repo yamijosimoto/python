@@ -18,9 +18,6 @@ BEGIN
 
     DECLARE @from DATE = DATEADD(DAY, -5, @date);
     DECLARE @to DATE = DATEADD(DAY, 1, @date);
-    DECLARE @query NVARCHAR(4000);
-    DECLARE @acc_code VARCHAR(300);
-
     CREATE TABLE #Temp (
         Name VARCHAR(256),
         LASTDATE INT,
@@ -29,39 +26,22 @@ BEGIN
         CurrencyCode VARCHAR(256)
     );
 
-    DECLARE curs CURSOR FAST_FORWARD READ_ONLY FOR
-        SELECT ACCOUNT_NUMBER
-        FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2
-        WHERE SOURCE = 'QORT'
-          AND ISNULL(ACCOUNT_NUMBER, '') != '';
-
-    OPEN curs;
-    FETCH NEXT FROM curs INTO @acc_code;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        INSERT INTO #Temp (Name, LASTDATE, Volume, Volume_2, CurrencyCode)
-        SELECT
-            sc.Name,
-            CONVERT(INT, CONVERT(VARCHAR(8), t.LASTDATE, 112)),
-            SUM(t.Volume) AS Volume,
-            SUM(t.Volume) AS Volume_2,
-            t.CurrencyCode
-        FROM BCS_STG.calypso.PositionsClient AS t
-        JOIN BCS_STG.CALYPSO.STORAGE sc ON t.StorageID = sc.ID
-        WHERE 1=1
-          AND t.LASTDATE >= @from
-          AND t.LASTDATE <= @to
-          AND (@acc_code IS NULL OR sc.Code = @acc_code)
-          AND t.LASTDATE >= CONVERT(VARCHAR(8), @from, 112)
-          AND t.LASTDATE <= CONVERT(VARCHAR(8), @to, 112)
-        GROUP BY sc.Name, t.LASTDATE, t.CurrencyCode;
-
-        FETCH NEXT FROM curs INTO @acc_code;
-    END
-
-    CLOSE curs;
-    DEALLOCATE curs;
+    INSERT INTO #Temp (Name, LASTDATE, Volume, Volume_2, CurrencyCode)
+    SELECT
+        sc.Name,
+        CONVERT(INT, CONVERT(VARCHAR(8), t.LASTDATE, 112)),
+        SUM(t.Volume) AS Volume,
+        SUM(t.Volume) AS Volume_2,
+        t.CurrencyCode
+    FROM BCS_STG.calypso.PositionsClient AS t
+    JOIN BCS_STG.CALYPSO.STORAGE sc ON t.StorageID = sc.ID
+    JOIN BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 m
+        ON m.SOURCE = 'QORT'
+        AND ISNULL(m.ACCOUNT_NUMBER, '') != ''
+        AND (sc.Name = m.ACCOUNT_NUMBER OR sc.Code = m.ACCOUNT_NUMBER)
+    WHERE t.LASTDATE >= @from
+      AND t.LASTDATE < @to
+    GROUP BY sc.Name, t.LASTDATE, t.CurrencyCode;
 
     DELETE FROM BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1
     WHERE LASTDATE BETWEEN 
