@@ -18,6 +18,27 @@ BEGIN
 
     DECLARE @from DATE = DATEADD(DAY, -5, @date);
     DECLARE @to DATE = DATEADD(DAY, 1, @date);
+    DECLARE @has_accounts BIT = 0;
+
+    CREATE TABLE #Accounts (
+        AccountNumber VARCHAR(300) NOT NULL PRIMARY KEY
+    );
+
+    INSERT INTO #Accounts (AccountNumber)
+    SELECT DISTINCT a.AccountNumber
+    FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 m
+    CROSS APPLY (
+        SELECT NULLIF(
+            REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(m.ACCOUNT_NUMBER)), ' ', ''), CHAR(9), ''), CHAR(160), ''),
+            ''
+        ) AS AccountNumber
+    ) a
+    WHERE m.SOURCE = 'QORT'
+      AND a.AccountNumber IS NOT NULL;
+
+    IF EXISTS (SELECT 1 FROM #Accounts)
+        SET @has_accounts = 1;
+
     CREATE TABLE #Temp (
         Name VARCHAR(256),
         LASTDATE INT,
@@ -35,12 +56,22 @@ BEGIN
         t.CurrencyCode
     FROM BCS_STG.calypso.PositionsClient AS t
     JOIN BCS_STG.CALYPSO.STORAGE sc ON t.StorageID = sc.ID
-    JOIN BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 m
-        ON m.SOURCE = 'QORT'
-        AND ISNULL(m.ACCOUNT_NUMBER, '') != ''
-        AND (sc.Name = m.ACCOUNT_NUMBER OR sc.Code = m.ACCOUNT_NUMBER)
+    CROSS APPLY (
+        SELECT
+            REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(sc.Name)), ' ', ''), CHAR(9), ''), CHAR(160), '') AS NameNorm,
+            REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(sc.Code)), ' ', ''), CHAR(9), ''), CHAR(160), '') AS CodeNorm
+    ) scn
     WHERE t.LASTDATE >= @from
       AND t.LASTDATE < @to
+      AND (
+          @has_accounts = 0
+          OR EXISTS (
+              SELECT 1
+              FROM #Accounts a
+              WHERE a.AccountNumber = scn.NameNorm
+                 OR a.AccountNumber = scn.CodeNorm
+          )
+      )
     GROUP BY sc.Name, t.LASTDATE, t.CurrencyCode;
 
     DELETE FROM BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1
