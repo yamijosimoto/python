@@ -1,0 +1,215 @@
+USE [BCS_TRSR]
+GO
+
+/******** Object: StoredProcedure [dbo].[Usp_STL_CF_Nostro_Final_test] Script Date: 28.01.2026 *******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[Usp_STL_CF_Nostro_Final_test]
+    @date date = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @date IS NULL
+        SET @date = CAST(GETDATE() AS date);
+
+    DECLARE @report_date_int int = CAST(CONVERT(varchar, @date, 112) AS int);
+
+    exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date;
+    exec [dbo].[usp_STL_QORT_GetCYCAccounts_test] @date = @date;
+
+    DECLARE @bodr_date date = @date;
+    IF DATEPART(weekday, @date) = 2 -- monday
+        SET @bodr_date = DATEADD(day, -3, @date);
+    ELSE
+        SET @bodr_date = DATEADD(day, -1, @date);
+
+    DECLARE @ExchangeAggs table (
+        ID_ENTITY varchar(200),
+        STORAGE varchar(200),
+        DATE date,
+        Grouping varchar(200),
+        CURRENCY varchar(200),
+        OPENING_BALANCE decimal(20,2),
+        DEBIT_SUM decimal(20,2),
+        CREDIT_SUM decimal(20,2),
+        CLOSING_BALANCE decimal(20,2)
+    );
+
+    INSERT @ExchangeAggs
+    exec [dbo].[Usp_STL_CF_Nostro_ExchangeAgg] @after_date = @date;
+
+    -- Первый блок: BCS_BANK
+    SELECT
+        @report_date_int AS [DATE],
+        map.SOURCE,
+        map.ALIAS,
+        map.ID_ENTITY,
+        current.CURRENCY_ISO_CCODE AS [CCY],
+        map.ACCOUNT_NUMBER,
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+        COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+        COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
+    LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
+    LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+    LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+    WHERE accs.ID_SOURCE = 1
+        AND map.ID_ENTITY = 'BCS_BANK'
+    GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+
+    UNION ALL
+
+    -- Второй блок: BCS_RUSSIA, BCS_CONSULTING
+    SELECT
+        @report_date_int AS [DATE],
+        map.SOURCE,
+        CONCAT(map.ID_ENTITY, ' в БКС Банке') AS [ALIAS],
+        map.ID_ENTITY,
+        current.CURRENCY_ISO_CCODE AS [CCY],
+        map.ACCOUNT_NUMBER,
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+        COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+        COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
+    LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
+    LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+    LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+    WHERE accs.ID_SOURCE = 1
+        AND map.ID_ENTITY IN ('BCS_RUSSIA', 'BCS_CONSULTING')
+    GROUP BY map.SOURCE, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+
+    UNION ALL
+
+    -- Третий блок: IBSO (прочие счета)
+    SELECT
+        @report_date_int AS [DATE],
+        'IBSO' AS [SOURCE],
+        'Прочее' AS [ALIAS],
+        'BCS_BANK' AS [ID_ENTITY],
+        current.CURRENCY_ISO_CCODE AS [CCY],
+        'Прочее' AS [ACCOUNT_NUMBER],
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+        COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+        COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+        COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    FROM dbo.STL_IBSO_ResultRestDate ibso
+    LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+    LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+    WHERE (ibso.AccountNumber LIKE '30102%'
+        OR ibso.AccountNumber LIKE '30116%'
+        OR ibso.AccountNumber LIKE '30114%'
+        OR ibso.AccountNumber LIKE '30413%')
+        AND ibso.AccountNumber NOT IN (
+            SELECT ACCOUNT_NUMBER
+            FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2
+            WHERE ACCOUNT_NUMBER IS NOT NULL
+        )
+        AND accs.ID_SOURCE = 1
+    GROUP BY current.CURRENCY_ISO_CCODE
+
+    UNION ALL
+
+    -- Четвертый блок: ExchangeAggs (c group by no ALIAS)
+    SELECT
+        @report_date_int AS [DATE],
+        t.STORAGE AS [SOURCE],
+        t.ALIAS,
+        t.ID_ENTITY,
+        t.CURRENCY AS [CCY],
+        'Прочее' AS [ACCOUNT_NUMBER],
+        COALESCE(SUM(t.OPENING_BALANCE), 0) AS OpeningBalance,
+        COALESCE(SUM(t.CREDIT_SUM), 0) AS [IN],
+        COALESCE(SUM(t.DEBIT_SUM), 0) AS [OUT],
+        COALESCE(SUM(t.CLOSING_BALANCE), 0) AS ClosingBalance
+    FROM (
+        SELECT
+            CASE
+                WHEN Grouping IN ('00678', '01647', '10520') THEN '00678+01647'
+                WHEN Grouping IN ('13982', '14081', '14234', '00831') THEN '13982+14081+14234'
+                ELSE Grouping
+            END AS ALIAS,
+            aggs.*
+        FROM @ExchangeAggs aggs
+        WHERE aggs.DATE = @date
+    ) t
+    GROUP BY t.ALIAS, t.CURRENCY, t.ID_ENTITY, t.STORAGE
+
+    UNION ALL
+
+    -- пятый блок: STL_BO_Rest
+    SELECT
+        @report_date_int AS [DATE],
+        SOURCE,
+        CONCAT(ID_ENTITY, ' B ', ACCOUNT_NAME) AS [ALIAS],
+        ID_ENTITY,
+        CCY,
+        'Прочее' AS [ACCOUNT_NUMBER],
+        BOP_VALUE AS [OpeningBalance],
+        IN_TURN AS [IN],
+        OUT_TURN AS [OUT],
+        EOP_VALUE AS [ClosingBalance]
+    FROM [BCS_TRSR].[dbo].[STL_BO_Rest]
+    WHERE DATE = @report_date_int
+
+    UNION ALL
+
+    -- шестой блок: ARDSHINBANK (Manual)
+    SELECT
+        @report_date_int AS [DATE],
+        'MANUAL' AS [SOURCE],
+        'M_BCS_SP B ARDSHINBANK CJSC' AS [ALIAS],
+        'BCS_BANK' AS [ID_ENTITY],
+        t.CurrencyCode AS [CCY],
+        t.Name AS [ACCOUNT_NUMBER],
+        COALESCE(t.Volume, 0) AS [OpeningBalance],
+        0 AS [IN],
+        0 AS [OUT],
+        COALESCE(t.Volume_2, 0) AS [ClosingBalance]
+    FROM [BCS_TRSR].[dbo].[STL_ArdshinRestQORT_test_1] t
+    WHERE t.LASTDATE = @report_date_int
+
+    UNION ALL
+
+    -- восьмой блок: DWH_BODR (c правильным alias'ом)
+    SELECT
+        @report_date_int AS [DATE],
+        'DWH_BODR' AS [SOURCE],
+        ca.ALIAS,
+        ca.ID_ENTITY,
+        ccy.CURRENCY_ISO_CCODE AS CCY,
+        'Прочее' AS [ACCOUNT_NUMBER],
+        SUM(rc.VL_CUR) AS [OpeningBalance],
+        0 AS [IN],
+        0 AS [OUT],
+        SUM(rc.VL_CUR) AS [ClosingBalance]
+    FROM [DWH_BCS].[DMA].[DM_RESTCASHCLIENT] rc
+    LEFT JOIN DWH_BCS.DDS.DIC_ACCOUNT ac ON rc.ID_ACCOUNT_STORAGE = ac.ID_ACCOUNT
+    LEFT JOIN DWH_BCS.DDS.DIC_CLIENT cl ON cl.ID_CLIENT = rc.ID_CLIENT
+    LEFT JOIN DWH_BCS.DDS.DIC_CLIENT cl2 ON cl2.ID_CLIENT = ac.ID_COUNTERPART
+    LEFT JOIN DWH_BCS.DDS.DIC_CURRENCY ccy ON ccy.ID_CURRENCY = rc.ID_CURRENCY
+    CROSS APPLY (
+        SELECT
+            REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS') AS ID_ENTITY,
+            CASE
+                WHEN cl.ID_CLIENT = 12083872 THEN 'BCS_SP'
+                WHEN cl.ID_CLIENT = 24598211 THEN 'BCS_HK_P'
+                WHEN cl.ID_CLIENT = 20400834 THEN 'BCS_CONSULTING'
+                ELSE 'Unk'
+            END AS ALIAS
+    ) ca
+    WHERE rc.ID_SOURCE = 61
+        AND rc.DELETED = 0
+        AND ID_DATE = CAST(CONVERT(varchar, @bodr_date, 112) AS int)
+        AND cl.ID_CLIENT IN (12083872, 24598211, 20400834)
+    GROUP BY
+        ccy.CURRENCY_ISO_CCODE,
+        ca.ID_ENTITY,
+        ca.ALIAS;
+END
+GO
