@@ -1,0 +1,369 @@
+ALTER PROCEDURE [dbo].[Usp_STL_CF_Nostro_Final_test]
+@date date
+AS
+BEGIN
+
+--exec [dbo].[Usp_STL_CF_IBSO_GetRestDate] @date = @dt
+exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date --данные БОМРа (запишем в табл STL_BO_Rest)
+exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date
+
+declare @bodr_date date = @date;
+if DATEPART(weekday, @date) = 2 -- monday
+    set @bodr_date = DATEADD(day, -3, @date)
+else
+    set @bodr_date = DATEADD(day, -1, @date)
+
+declare @ExchangeAggs table (
+    ID_ENTITY varchar(200),
+    STORAGE varchar(200),
+    DATE date,
+    Grouping varchar(200),
+    CURRENCY varchar(200),
+    OPENING_BALANCE decimal(20,2),
+    DEBIT_SUM decimal(20,2),
+    CREDIT_SUM decimal(20,2),
+    CLOSING_BALANCE decimal(20,2)
+)
+
+insert @ExchangeAggs
+exec [dbo].[Usp_STL_CF_Nostro_ExchangeAgg] @after_date=@date
+
+-- Первый блок: BCS_BANK
+SELECT
+    map.SOURCE,
+    map.ALIAS,
+    map.ID_ENTITY,
+    current.CURRENCY_ISO_CCODE AS [CCY],
+    map.ACCOUNT_NUMBER,
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+    COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+    COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
+LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
+LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+WHERE accs.ID_SOURCE = 1
+    AND map.ID_ENTITY = 'BCS_BANK'
+GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+
+UNION
+
+-- Второй блок: BCS_RUSSIA, BCS_CONSULTING
+SELECT
+    map.SOURCE,
+    CONCAT(map.ID_ENTITY, ' в БКС Банке') AS [ALIAS],
+    map.ID_ENTITY,
+    current.CURRENCY_ISO_CCODE AS [CCY],
+    map.ACCOUNT_NUMBER, -- добавлено
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+    COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+    COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
+LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
+LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+WHERE accs.ID_SOURCE = 1
+    AND map.ID_ENTITY IN ('BCS_RUSSIA', 'BCS_CONSULTING')
+GROUP BY map.SOURCE, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+
+UNION
+
+-- Третий блок: IBSO (прочие счета)
+SELECT
+    'IBSO' AS [SOURCE],
+    'Прочее' AS [ALIAS],
+    'BCS_BANK' AS [ID_ENTITY],
+    current.CURRENCY_ISO_CCODE AS [CCY],
+    'Прочее' AS [ACCOUNT_NUMBER],
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
+    COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
+    COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+FROM dbo.STL_IBSO_ResultRestDate ibso
+LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
+LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+WHERE (ibso.AccountNumber LIKE '30102%'
+    OR ibso.AccountNumber LIKE '30116%'
+    OR ibso.AccountNumber LIKE '30114%'
+    OR ibso.AccountNumber LIKE '30413%')
+    AND ibso.AccountNumber NOT IN (SELECT ACCOUNT_NUMBER FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2)
+    AND accs.ID_SOURCE = 1
+GROUP BY current.CURRENCY_ISO_CCODE
+
+UNION
+
+-- Четвертый блок: ExchangeAggs (c group by no ALIAS)
+SELECT
+    t.STORAGE AS [SOURCE],
+    t.ALIAS,
+    t.ID_ENTITY,
+    t.CURRENCY AS [CCY],
+    'Прочее' AS [ACCOUNT_NUMBER],
+    COALESCE(SUM(t.OPENING_BALANCE), 0) AS OpeningBalance,
+    COALESCE(SUM(t.CREDIT_SUM), 0) AS [IN],
+    COALESCE(SUM(t.DEBIT_SUM), 0) AS [OUT],
+    COALESCE(SUM(t.CLOSING_BALANCE), 0) AS ClosingBalance
+FROM (
+    SELECT
+        CASE
+            WHEN Grouping IN ('00678', '01647', '10520') THEN '00678+01647'
+            WHEN Grouping IN ('13982', '14081', '14234', '00831') THEN '13982+14081+14234'
+            ELSE Grouping
+        END AS ALIAS,
+        aggs.*
+    FROM @ExchangeAggs aggs
+    WHERE aggs.DATE = @date
+) t
+GROUP BY t.ALIAS, t.CURRENCY, t.ID_ENTITY, t.STORAGE
+
+UNION
+
+-- пятый блок: STL_BO_Rest
+SELECT
+    SOURCE,
+    CONCAT(ID_ENTITY, ' B ', ACCOUNT_NAME) AS [ALIAS],
+    ID_ENTITY,
+    CCY,
+    'Прочее' AS [ACCOUNT_NUMBER],
+    BOP_VALUE AS [OpeningBalance],
+    IN_TURN AS [IN],
+    OUT_TURN AS [OUT],
+    EOP_VALUE AS [ClosingBalance]
+FROM [BCS_TRSR].[dbo].[STL_BO_Rest]
+WHERE DATE = CAST(CONVERT(varchar, @date, 112) AS int)
+
+UNION
+
+-- шестой блок: ARDSHINBANK (Manual)
+SELECT
+    'MANUAL' AS [SOURCE],
+    'M_BCS_SP B ARDSHINBANK CJSC' AS [ALIAS],
+    'BCS_BANK' AS [ID_ENTITY],
+    t.CurrencyCode AS [CCY],
+    t.Name AS [ACCOUNT_NUMBER],
+    COALESCE(t.Volume, 0) AS [OpeningBalance],
+    0 AS [IN],
+    0 AS [OUT],
+    COALESCE(t.Volume_2, 0) AS [ClosingBalance]
+FROM [BCS_TRSR].[dbo].[STL_ArdshinRestQORT_test_1] t
+WHERE t.LASTDATE = CAST(CONVERT(varchar, @date, 112) AS int)
+
+UNION
+
+-- восьмой блок: DWH_BODR (c правильным alias'ом)
+SELECT
+    'DWH_BODR' AS [SOURCE],
+    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS') AS ID_ENTITY,
+    ccy.CURRENCY_ISO_CCODE AS CCY,
+    'Прочее' AS [ACCOUNT_NUMBER],
+    SUM(rc.VL_CUR) AS [OpeningBalance],
+    0 AS [IN],
+    0 AS [OUT],
+    SUM(rc.VL_CUR) AS [ClosingBalance]
+FROM [DWH_BCS].[DMA].[DM_RESTCASHCLIENT] rc
+LEFT JOIN DWH_BCS.DDS.DIC_ACCOUNT ac ON rc.ID_ACCOUNT_STORAGE = ac.ID_ACCOUNT
+LEFT JOIN DWH_BCS.DDS.DIC_CLIENT cl ON cl.ID_CLIENT = rc.ID_CLIENT
+LEFT JOIN DWH_BCS.DDS.DIC_CLIENT cl2 ON cl2.ID_CLIENT = ac.ID_COUNTERPART
+LEFT JOIN DWH_BCS.DDS.DIC_CURRENCY ccy ON ccy.ID_CURRENCY = rc.ID_CURRENCY
+WHERE rc.ID_SOURCE = 61
+    AND rc.DELETED = 0
+    AND ID_DATE = CAST(CONVERT(varchar, @bodr_date, 112) AS int)
+    AND cl.ID_CLIENT IN (12083872, 24598211, 20400834)
+GROUP BY
+    ccy.CURRENCY_ISO_CCODE,
+    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS')
+CASE
+    WHEN cl.ID_CLIENT = 12083872 THEN 'BCS_SP'
+    WHEN cl.ID_CLIENT = 24598211 THEN 'BCS_HK_P'
+    WHEN cl.ID_CLIENT = 20400834 THEN 'BCS_CONSULTING'
+    ELSE 'Unk'
+END
+
+END
+
+
+ALTER PROCEDURE [dbo].[usp_STL_QORT_GetCYAccounts_test]
+@date DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Установка даты по умолчанию (только дата, без времени)
+    IF @date IS NULL
+        SET @date = CAST(GETDATE() AS DATE);
+
+    -- Диапазон: 5 дней назад включительно до @date включительно
+    DECLARE @from DATE = DATEADD(DAY, -5, @date);
+    DECLARE @to DATE = @date;
+
+    -- Промежуточная таблица
+    CREATE TABLE #Temp (
+        Name VARCHAR(256),
+        LASTDATE INT,
+        Volume MONEY,
+        Volume_2 MONEY,
+        CurrencyCode VARCHAR(256)
+    );
+
+    -- Вставка данных с правильным соединением через первые 3 символа ID_STORAGE
+    INSERT INTO #Temp (Name, LASTDATE, Volume, Volume_2, CurrencyCode)
+    SELECT
+        sc.Name,
+        CONVERT(INT, CONVERT(VARCHAR(8), t.LASTDATE, 112)),
+        SUM(t.Volume) AS Volume,
+        SUM(t.Volume) AS Volume_2,
+        t.CurrencyCode
+    FROM BCS_STG.calypso.PositionsClient AS t
+    INNER JOIN BCS_STG.calypso.STORAGE sc
+        ON t.storageID = sc.ID
+    INNER JOIN BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 m
+        ON sc.Name LIKE '%' + LEFT(m.ID_STORAGE, 3) + '%'
+        AND m.SOURCE = 'QORT'
+        AND m.ID_STORAGE IS NOT NULL
+        AND LTRIM(RTRIM(m.ACCOUNT_NUMBER)) != ''
+    WHERE t.LASTDATE >= @from
+        AND t.LASTDATE <= @to
+    GROUP BY sc.Name, t.LASTDATE, t.CurrencyCode;
+
+    -- Удаляем старые данные за период
+    DECLARE @from_int INT = CONVERT(INT, CONVERT(VARCHAR(8), @from, 112));
+    DECLARE @to_int INT = CONVERT(INT, CONVERT(VARCHAR(8), @to, 112));
+
+    DELETE FROM BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1
+    WHERE LASTDATE BETWEEN @from_int AND @to_int;
+
+    -- Вставляем новые данные
+    INSERT INTO BCS_TRSR.dbo.STL_ArdshinRestQORT_test_1 (
+        Name, LASTDATE, Volume, Volume_2, CurrencyCode
+    )
+    SELECT
+        Name, LASTDATE, Volume, Volume_2, CurrencyCode
+    FROM #Temp;
+
+    -- Отладка: проверка результатов
+    SELECT * FROM #Temp ORDER BY LASTDATE, Name;
+
+    DROP TABLE #Temp;
+END
+
+
+
+ALTER PROCEDURE [dbo].[Usp_STL_DWH_GetBOMR_Rest]
+    @date date
+AS
+BEGIN
+    CREATE TABLE #Temp
+    (
+        DATE int,
+        ACCOUNT_NAME varchar(300),
+        SOURCE varchar(100),
+        ID_STORAGE varchar(300),
+        ID_ENTITY varchar(300),
+        ACCOUNT_NUMBER varchar(max),
+        CCY varchar(10),
+        BOP_VALUE decimal(20,4),
+        IN_TURN decimal(20,4),
+        OUT_TURN decimal(20,4),
+        EOP_VALUE decimal(20,4)
+    );
+
+    DECLARE @dt_to int = CAST(CONVERT(varchar, @date, 112) as int);
+    DECLARE @dt_t1 int = CAST(CONVERT(varchar, DATEADD(day, -1, @date), 112) as int);
+
+    WITH tab AS (
+        select
+            r.ID_DATE DT
+            , acc.ACCOUNT_NAME [ACCOUNT_NAME]
+            , acc.ACCOUNT_NUMBER [ACCOUNT_NUMBER]
+            , CCY.CURRENCY_ISO_CCODE [CCY]
+            , SUM(r.VL_CUR) [VALUE]
+        from DWH_BCS.DMA.DM_RESTCASHCOMPANY r
+        left join dds.dic_account acc
+            on acc.ID_ACCOUNT = r.ID_ACCOUNT_STORAGE
+        left join dds.dic_currency ccy
+            on ccy.ID_CURRENCY = r.ID_CURRENCY
+        where
+            r.ID_SOURCE = 3
+            and r.ID_DATE >= @dt_t1
+            and r.ID_ACCOUNT_STORAGE in (30011467,30077164,30153453,31991950,31991989,31992020,31993252) -- SP Plc
+        GROUP BY r.ID_DATE, acc.ACCOUNT_NAME, acc.ACCOUNT_NUMBER, CCY.CURRENCY_ISO_CCODE
+    ),
+    RESULT AS (
+        Select
+            to.DT [DATE]
+            , to.ACCOUNT_NAME
+            , 'BOMR' [SOURCE]
+            , to.ID_STORAGE
+            , CASE
+                WHEN to.ACCOUNT_NAME = 'ARDSHINBANK CJSC' THEN 'ARDSHINBANK_CJSC'
+                WHEN to.ACCOUNT_NAME = 'FIRST ABU DHABI BANK PJSC' THEN 'FAB'
+                WHEN to.ACCOUNT_NAME = 'UNIBANK O.J.S.C' THEN 'UNIBANK'
+                ELSE to.ACCOUNT_NAME
+              END ID_ENTITY
+            , to.ACCOUNT_NUMBER
+            , to.CCY
+            , t1.VALUE [BOP_VALUE]
+            , CASE WHEN to.VALUE - t1.VALUE > 0 THEN to.VALUE - t1.VALUE ELSE 0 END [IN_TURN]
+            , CASE WHEN t1.VALUE - to.VALUE > 0 THEN t1.VALUE - to.VALUE ELSE 0 END [OUT_TURN]
+            , to.VALUE [EOP_VALUE]
+        FROM (select * from tab where DT = @dt_to) to
+        left join (select * from tab where DT = @dt_t1) t1
+            ON to.ACCOUNT_NAME = t1.ACCOUNT_NAME and to.ACCOUNT_NUMBER = t1.ACCOUNT_NUMBER and to.CCY = t1.CCY
+    )
+
+    INSERT INTO #Temp
+    SELECT * FROM RESULT;
+
+    UPDATE to_tab
+    SET to_tab.DATE = from_tab.DATE,
+        to_tab.ACCOUNT_NAME = from_tab.ACCOUNT_NAME,
+        to_tab.ACCOUNT_NUMBER = from_tab.ACCOUNT_NUMBER,
+        to_tab.SOURCE = 'BOMR',
+        to_tab.ID_STORAGE = from_tab.ID_STORAGE,
+        to_tab.ID_ENTITY = from_tab.ID_ENTITY,
+        to_tab.CCY = from_tab.CCY,
+        to_tab.BOP_VALUE = from_tab.BOP_VALUE,
+        to_tab.IN_TURN = from_tab.IN_TURN,
+        to_tab.OUT_TURN = from_tab.OUT_TURN,
+        to_tab.EOP_VALUE = from_tab.EOP_VALUE,
+        to_tab.INSERT_TIMESTAMP = CURRENT_TIMESTAMP
+    FROM #Temp from_tab
+    INNER JOIN [BCS_TRSR].[dbo].[STL_BO_Rest] to_tab
+        ON from_tab.DATE = to_tab.DATE
+        AND from_tab.ID_STORAGE = to_tab.ID_STORAGE
+        AND from_tab.ID_ENTITY = to_tab.ID_ENTITY
+        AND from_tab.ACCOUNT_NUMBER = to_tab.ACCOUNT_NUMBER
+        AND from_tab.ACCOUNT_NAME = to_tab.ACCOUNT_NAME
+        AND from_tab.CCY = to_tab.CCY
+    WHERE to_tab.DATE IS NULL;
+
+    IF @@ROWCOUNT < (select COUNT(*) from #Temp)
+        INSERT INTO [BCS_TRSR].[dbo].[STL_BO_Rest](
+            DATE, ACCOUNT_NAME, ACCOUNT_NUMBER, SOURCE, ID_STORAGE, ID_ENTITY, CCY, BOP_VALUE, IN_TURN, OUT_TURN, EOP_VALUE
+        )
+        SELECT 
+            from_tab.DATE, 
+            from_tab.ACCOUNT_NAME, 
+            from_tab.ACCOUNT_NUMBER, 
+            from_tab.SOURCE, 
+            from_tab.ID_STORAGE, 
+            from_tab.ID_ENTITY,
+            from_tab.CCY, 
+            from_tab.BOP_VALUE, 
+            from_tab.IN_TURN, 
+            from_tab.OUT_TURN, 
+            from_tab.EOP_VALUE
+        FROM #Temp from_tab
+        LEFT JOIN [BCS_TRSR].[dbo].[STL_BO_Rest] to_tab
+            ON from_tab.DATE = to_tab.DATE
+            AND from_tab.ID_STORAGE = to_tab.ID_STORAGE
+            AND from_tab.ID_ENTITY = to_tab.ID_ENTITY
+            AND from_tab.ACCOUNT_NUMBER = to_tab.ACCOUNT_NUMBER
+            AND from_tab.ACCOUNT_NAME = to_tab.ACCOUNT_NAME
+            AND from_tab.CCY = to_tab.CCY
+        WHERE to_tab.DATE IS NULL;
+
+    DROP TABLE #Temp;
+END
