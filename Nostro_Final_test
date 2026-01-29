@@ -4,8 +4,10 @@ AS
 BEGIN
 
 --exec [dbo].[Usp_STL_CF_IBSO_GetRestDate] @date = @dt
-exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date --данные БОМРа (запишем в табл STL_BO_Rest)
-exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date
+SET NOCOUNT ON;
+
+exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date WITH RESULT SETS NONE; --данные БОМРа (запишем в табл STL_BO_Rest)
+exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date WITH RESULT SETS NONE;
 
 declare @bodr_date date = @date;
 if DATEPART(weekday, @date) = 2 -- monday
@@ -136,27 +138,39 @@ WHERE DATE = CAST(CONVERT(varchar, @date, 112) AS int)
 
 UNION
 
--- шестой блок: ARDSHINBANK (Manual)
+-- шестой блок: QORT
 SELECT
-    'MANUAL' AS [SOURCE],
-    'M_BCS_SP B ARDSHINBANK CJSC' AS [ALIAS],
-    'BCS_BANK' AS [ID_ENTITY],
+    map.SOURCE,
+    map.ALIAS,
+    map.ID_ENTITY,
     t.CurrencyCode AS [CCY],
-    t.Name AS [ACCOUNT_NUMBER],
-    COALESCE(t.Volume, 0) AS [OpeningBalance],
+    map.ACCOUNT_NUMBER,
+    COALESCE(SUM(t.Volume), 0) AS [OpeningBalance],
     0 AS [IN],
     0 AS [OUT],
-    COALESCE(t.Volume_2, 0) AS [ClosingBalance]
+    COALESCE(SUM(t.Volume_2), 0) AS [ClosingBalance]
 FROM [BCS_TRSR].[dbo].[STL_ArdshinRestQORT_test_1] t
+INNER JOIN [BCS_TRSR].[dbo].[STL_CF_Nostro_Mapping_test_2] map
+    ON map.SOURCE = 'QORT'
+    AND map.ID_STORAGE IS NOT NULL
+    AND LTRIM(RTRIM(map.ACCOUNT_NUMBER)) != ''
+    AND t.Name LIKE '%' + LEFT(map.ID_STORAGE, 3) + '%'
 WHERE t.LASTDATE = CAST(CONVERT(varchar, @date, 112) AS int)
+GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, t.CurrencyCode, map.ACCOUNT_NUMBER
 
 UNION
 
 -- восьмой блок: DWH_BODR (c правильным alias'ом)
 SELECT
     'DWH_BODR' AS [SOURCE],
-    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS') AS ID_ENTITY,
-    ccy.CURRENCY_ISO_CCODE AS CCY,
+    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS') AS [ALIAS],
+    CASE
+        WHEN cl.ID_CLIENT = 12083872 THEN 'BCS_SP'
+        WHEN cl.ID_CLIENT = 24598211 THEN 'BCS_HK_P'
+        WHEN cl.ID_CLIENT = 20400834 THEN 'BCS_CONSULTING'
+        ELSE 'Unk'
+    END AS [ID_ENTITY],
+    ccy.CURRENCY_ISO_CCODE AS [CCY],
     'Прочее' AS [ACCOUNT_NUMBER],
     SUM(rc.VL_CUR) AS [OpeningBalance],
     0 AS [IN],
@@ -173,13 +187,13 @@ WHERE rc.ID_SOURCE = 61
     AND cl.ID_CLIENT IN (12083872, 24598211, 20400834)
 GROUP BY
     ccy.CURRENCY_ISO_CCODE,
-    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS')
-CASE
-    WHEN cl.ID_CLIENT = 12083872 THEN 'BCS_SP'
-    WHEN cl.ID_CLIENT = 24598211 THEN 'BCS_HK_P'
-    WHEN cl.ID_CLIENT = 20400834 THEN 'BCS_CONSULTING'
-    ELSE 'Unk'
-END
+    REPLACE(REPLACE(REPLACE(ac.Account_name, CONCAT('(', ccy.CURRENCY_ISO_CCODE, ')'), ''), ' (RUR)', ''), 'PENDING TRADING INTERBANK TRANSFERS', 'PENDING TRADING INTERBANK TRANSFERS'),
+    CASE
+        WHEN cl.ID_CLIENT = 12083872 THEN 'BCS_SP'
+        WHEN cl.ID_CLIENT = 24598211 THEN 'BCS_HK_P'
+        WHEN cl.ID_CLIENT = 20400834 THEN 'BCS_CONSULTING'
+        ELSE 'Unk'
+    END
 
 END
 
