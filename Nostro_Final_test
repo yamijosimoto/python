@@ -6,8 +6,8 @@ BEGIN
 --exec [dbo].[Usp_STL_CF_IBSO_GetRestDate] @date = @dt
 SET NOCOUNT ON;
 
-exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date WITH RESULT SETS NONE; --данные БОМРа (запишем в табл STL_BO_Rest)
-exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date;
+exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date; --данные БОМРа (запишем в табл STL_BO_Rest)
+exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date, @debug = 0;
 
 declare @bodr_date date = @date;
 if DATEPART(weekday, @date) = 2 -- monday
@@ -40,7 +40,8 @@ SELECT
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
     COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
-    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance,
+    @date AS [REPORT_DATE]
 FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
 LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
@@ -61,7 +62,8 @@ SELECT
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
     COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
-    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance,
+    @date AS [REPORT_DATE]
 FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
 LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
@@ -82,7 +84,8 @@ SELECT
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
     COALESCE(SUM(ABS(ibso.CRED_TURN_AMT_CUR)), 0) AS [OUT],
-    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
+    COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance,
+    @date AS [REPORT_DATE]
 FROM dbo.STL_IBSO_ResultRestDate ibso
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
 LEFT JOIN DDS.dic_currency curr ON curr.ID_CURRENCY = accs.ID_CURRENCY
@@ -106,7 +109,8 @@ SELECT
     COALESCE(SUM(t.OPENING_BALANCE), 0) AS OpeningBalance,
     COALESCE(SUM(t.CREDIT_SUM), 0) AS [IN],
     COALESCE(SUM(t.DEBIT_SUM), 0) AS [OUT],
-    COALESCE(SUM(t.CLOSING_BALANCE), 0) AS ClosingBalance
+    COALESCE(SUM(t.CLOSING_BALANCE), 0) AS ClosingBalance,
+    @date AS [REPORT_DATE]
 FROM (
     SELECT
         CASE
@@ -132,7 +136,8 @@ SELECT
     BOP_VALUE AS [OpeningBalance],
     IN_TURN AS [IN],
     OUT_TURN AS [OUT],
-    EOP_VALUE AS [ClosingBalance]
+    EOP_VALUE AS [ClosingBalance],
+    @date AS [REPORT_DATE]
 FROM [BCS_TRSR].[dbo].[STL_BO_Rest]
 WHERE DATE = CAST(CONVERT(varchar, @date, 112) AS int)
 
@@ -140,23 +145,29 @@ UNION
 
 -- шестой блок: QORT
 SELECT
-    map.SOURCE,
-    map.ALIAS,
-    map.ID_ENTITY,
+    COALESCE(map.SOURCE, 'QORT') AS [SOURCE],
+    COALESCE(map.ALIAS, t.Name) AS [ALIAS],
+    COALESCE(map.ID_ENTITY, 'BCS_BANK') AS [ID_ENTITY],
     t.CurrencyCode AS [CCY],
-    map.ACCOUNT_NUMBER,
+    COALESCE(NULLIF(LTRIM(RTRIM(map.ACCOUNT_NUMBER)), ''), t.Name) AS [ACCOUNT_NUMBER],
     COALESCE(SUM(t.Volume), 0) AS [OpeningBalance],
     0 AS [IN],
     0 AS [OUT],
-    COALESCE(SUM(t.Volume_2), 0) AS [ClosingBalance]
+    COALESCE(SUM(t.Volume_2), 0) AS [ClosingBalance],
+    @date AS [REPORT_DATE]
 FROM [BCS_TRSR].[dbo].[STL_ArdshinRestQORT_test_1] t
-INNER JOIN [BCS_TRSR].[dbo].[STL_CF_Nostro_Mapping_test_2] map
+LEFT JOIN [BCS_TRSR].[dbo].[STL_CF_Nostro_Mapping_test_2] map
     ON map.SOURCE = 'QORT'
     AND map.ID_STORAGE IS NOT NULL
     AND LTRIM(RTRIM(map.ACCOUNT_NUMBER)) != ''
     AND t.Name LIKE '%' + LEFT(map.ID_STORAGE, 3) + '%'
 WHERE t.LASTDATE = CAST(CONVERT(varchar, @date, 112) AS int)
-GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, t.CurrencyCode, map.ACCOUNT_NUMBER
+GROUP BY
+    COALESCE(map.SOURCE, 'QORT'),
+    COALESCE(map.ALIAS, t.Name),
+    COALESCE(map.ID_ENTITY, 'BCS_BANK'),
+    t.CurrencyCode,
+    COALESCE(NULLIF(LTRIM(RTRIM(map.ACCOUNT_NUMBER)), ''), t.Name)
 
 UNION
 
@@ -175,7 +186,8 @@ SELECT
     SUM(rc.VL_CUR) AS [OpeningBalance],
     0 AS [IN],
     0 AS [OUT],
-    SUM(rc.VL_CUR) AS [ClosingBalance]
+    SUM(rc.VL_CUR) AS [ClosingBalance],
+    @date AS [REPORT_DATE]
 FROM [DWH_BCS].[DMA].[DM_RESTCASHCLIENT] rc
 LEFT JOIN DWH_BCS.DDS.DIC_ACCOUNT ac ON rc.ID_ACCOUNT_STORAGE = ac.ID_ACCOUNT
 LEFT JOIN DWH_BCS.DDS.DIC_CLIENT cl ON cl.ID_CLIENT = rc.ID_CLIENT
