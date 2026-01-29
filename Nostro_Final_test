@@ -35,7 +35,7 @@ SELECT
     map.SOURCE,
     map.ALIAS,
     map.ID_ENTITY,
-    current.CURRENCY_ISO_CCODE AS [CCY],
+    curr.CURRENCY_ISO_CCODE AS [CCY],
     map.ACCOUNT_NUMBER,
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
@@ -44,10 +44,10 @@ SELECT
 FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
 LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
-LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+LEFT JOIN DDS.dic_currency curr ON curr.ID_CURRENCY = accs.ID_CURRENCY
 WHERE accs.ID_SOURCE = 1
     AND map.ID_ENTITY = 'BCS_BANK'
-GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+GROUP BY map.SOURCE, map.ALIAS, map.ID_ENTITY, curr.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
 
 UNION
 
@@ -56,7 +56,7 @@ SELECT
     map.SOURCE,
     CONCAT(map.ID_ENTITY, ' в БКС Банке') AS [ALIAS],
     map.ID_ENTITY,
-    current.CURRENCY_ISO_CCODE AS [CCY],
+    curr.CURRENCY_ISO_CCODE AS [CCY],
     map.ACCOUNT_NUMBER, -- добавлено
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
@@ -65,10 +65,10 @@ SELECT
 FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2 AS map
 LEFT JOIN dbo.STL_IBSO_ResultRestDate ibso ON ibso.AccountNumber = map.ACCOUNT_NUMBER
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
-LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+LEFT JOIN DDS.dic_currency curr ON curr.ID_CURRENCY = accs.ID_CURRENCY
 WHERE accs.ID_SOURCE = 1
     AND map.ID_ENTITY IN ('BCS_RUSSIA', 'BCS_CONSULTING')
-GROUP BY map.SOURCE, map.ID_ENTITY, current.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
+GROUP BY map.SOURCE, map.ID_ENTITY, curr.CURRENCY_ISO_CCODE, map.ACCOUNT_NUMBER
 
 UNION
 
@@ -77,7 +77,7 @@ SELECT
     'IBSO' AS [SOURCE],
     'Прочее' AS [ALIAS],
     'BCS_BANK' AS [ID_ENTITY],
-    current.CURRENCY_ISO_CCODE AS [CCY],
+    curr.CURRENCY_ISO_CCODE AS [CCY],
     'Прочее' AS [ACCOUNT_NUMBER],
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_IN_CUR)), 0) AS OpeningBalance,
     COALESCE(SUM(ABS(ibso.DEBT_TURN_AMT_CUR)), 0) AS [IN],
@@ -85,14 +85,14 @@ SELECT
     COALESCE(SUM(ABS(ibso.BALANCE_AMT_CUR)), 0) AS ClosingBalance
 FROM dbo.STL_IBSO_ResultRestDate ibso
 LEFT JOIN DDS.DIC_ACCOUNT accs ON accs.ACCOUNT_NUMBER = ibso.AccountNumber
-LEFT JOIN DDS.dic_currency current ON current.ID_CURRENCY = accs.ID_CURRENCY
+LEFT JOIN DDS.dic_currency curr ON curr.ID_CURRENCY = accs.ID_CURRENCY
 WHERE (ibso.AccountNumber LIKE '30102%'
     OR ibso.AccountNumber LIKE '30116%'
     OR ibso.AccountNumber LIKE '30114%'
     OR ibso.AccountNumber LIKE '30413%')
     AND ibso.AccountNumber NOT IN (SELECT ACCOUNT_NUMBER FROM BCS_TRSR.dbo.STL_CF_Nostro_Mapping_test_2)
     AND accs.ID_SOURCE = 1
-GROUP BY current.CURRENCY_ISO_CCODE
+GROUP BY curr.CURRENCY_ISO_CCODE
 
 UNION
 
