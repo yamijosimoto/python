@@ -199,7 +199,8 @@ END
 
 
 ALTER PROCEDURE [dbo].[usp_STL_QORT_GetCYAccounts_test]
-@date DATE = NULL
+@date DATE = NULL,
+@debug bit = 0
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -257,7 +258,8 @@ BEGIN
     FROM #Temp;
 
     -- Отладка: проверка результатов
-    SELECT * FROM #Temp ORDER BY LASTDATE, Name;
+    IF @debug = 1
+        SELECT * FROM #Temp ORDER BY LASTDATE, Name;
 
     DROP TABLE #Temp;
 END
