@@ -7,7 +7,7 @@ BEGIN
 SET NOCOUNT ON;
 
 exec [dbo].[Usp_STL_DWH_GetBOMR_Rest] @date = @date WITH RESULT SETS NONE; --данные БОМРа (запишем в табл STL_BO_Rest)
-exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date WITH RESULT SETS NONE;
+exec [dbo].[usp_STL_QORT_GetCYAccounts_test] @date = @date;
 
 declare @bodr_date date = @date;
 if DATEPART(weekday, @date) = 2 -- monday
@@ -257,9 +257,13 @@ BEGIN
         Name, LASTDATE, Volume, Volume_2, CurrencyCode
     FROM #Temp;
 
-    -- Отладка: проверка результатов
+    -- Отладка: выводим только сообщение, без result set
     IF @debug = 1
-        SELECT * FROM #Temp ORDER BY LASTDATE, Name;
+    BEGIN
+        DECLARE @cnt int;
+        SELECT @cnt = COUNT(*) FROM #Temp;
+        PRINT 'QORT rows: ' + CONVERT(varchar(20), @cnt);
+    END
 
     DROP TABLE #Temp;
 END
